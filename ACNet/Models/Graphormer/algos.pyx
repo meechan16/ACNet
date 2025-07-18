@@ -1,29 +1,32 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
+# cython: language_level=3
 
 import cython
 from cython.parallel cimport prange, parallel
-cimport numpy
-import numpy
+cimport numpy as cnp
+import numpy as np
 
-def floyd_warshall(adjacency_matrix):
+# Cython typedefs
+ctypedef cnp.int64_t DTYPE_t
 
-    (nrows, ncols) = adjacency_matrix.shape
+def floyd_warshall(cnp.ndarray[DTYPE_t, ndim=2] adjacency_matrix):
+
+    cdef int nrows = adjacency_matrix.shape[0]
+    cdef int ncols = adjacency_matrix.shape[1]
     assert nrows == ncols
     cdef unsigned int n = nrows
 
-    adj_mat_copy = adjacency_matrix.astype(long, order='C', casting='safe', copy=True)
+    adj_mat_copy = adjacency_matrix.astype(np.int64, order='C', casting='safe', copy=True)
     assert adj_mat_copy.flags['C_CONTIGUOUS']
-    cdef numpy.ndarray[long, ndim=2, mode='c'] M = adj_mat_copy
-    cdef numpy.ndarray[long, ndim=2, mode='c'] path = numpy.zeros([n, n], dtype=numpy.int64)
+
+    cdef cnp.ndarray[DTYPE_t, ndim=2, mode='c'] M = adj_mat_copy
+    cdef cnp.ndarray[DTYPE_t, ndim=2, mode='c'] path = np.zeros([n, n], dtype=np.int64)
 
     cdef unsigned int i, j, k
-    cdef long M_ij, M_ik, cost_ikkj
-    cdef long* M_ptr = &M[0,0]
-    cdef long* M_i_ptr
-    cdef long* M_k_ptr
+    cdef DTYPE_t M_ij, M_ik, cost_ikkj
+    cdef DTYPE_t* M_ptr = &M[0,0]
+    cdef DTYPE_t* M_i_ptr
+    cdef DTYPE_t* M_k_ptr
 
-    # set unreachable nodes distance to 510
     for i in range(n):
         for j in range(n):
             if i == j:
@@ -31,7 +34,6 @@ def floyd_warshall(adjacency_matrix):
             elif M[i][j] == 0:
                 M[i][j] = 510
 
-    # floyed algo
     for k in range(n):
         M_k_ptr = M_ptr + n*k
         for i in range(n):
@@ -43,9 +45,7 @@ def floyd_warshall(adjacency_matrix):
                 if M_ij > cost_ikkj:
                     M_i_ptr[j] = cost_ikkj
                     path[i][j] = k
-                    # Path[i][j] means, if want go from i to j, traveler should go to k first. Then, from k to j.
 
-    # set unreachable path to 510
     for i in range(n):
         for j in range(n):
             if M[i][j] >= 510:
@@ -55,42 +55,41 @@ def floyd_warshall(adjacency_matrix):
     return M, path
 
 
-def get_all_edges(path, i, j):
+def get_all_edges(cnp.ndarray[DTYPE_t, ndim=2] path, int i, int j):
     cdef unsigned int k = path[i][j]
     if k == 0:
         return []
     else:
         return get_all_edges(path, i, k) + [k] + get_all_edges(path, k, j)
-# returns a list with all passing nodes from i to j in the SP
 
-def gen_edge_input(max_dist, path, edge_feat):
 
-    (nrows, ncols) = path.shape
+def gen_edge_input(int max_dist, cnp.ndarray[DTYPE_t, ndim=2] path, cnp.ndarray[DTYPE_t, ndim=3] edge_feat):
+
+    cdef int nrows = path.shape[0]
+    cdef int ncols = path.shape[1]
     assert nrows == ncols
     cdef unsigned int n = nrows
     cdef unsigned int max_dist_copy = max_dist
 
-    path_copy = path.astype(long, order='C', casting='safe', copy=True)
-    edge_feat_copy = edge_feat.astype(long, order='C', casting='safe', copy=True)
+    path_copy = path.astype(np.int64, order='C', casting='safe', copy=True)
+    edge_feat_copy = edge_feat.astype(np.int64, order='C', casting='safe', copy=True)
     assert path_copy.flags['C_CONTIGUOUS']
     assert edge_feat_copy.flags['C_CONTIGUOUS']
 
-    cdef numpy.ndarray[long, ndim=4, mode='c'] edge_fea_all = -1 * numpy.ones([n, n, max_dist_copy, edge_feat.shape[-1]], dtype=numpy.int64)
-    cdef unsigned int i, j, k, num_path, cur
+    cdef cnp.ndarray[DTYPE_t, ndim=4, mode='c'] edge_fea_all = -1 * np.ones([n, n, max_dist_copy, edge_feat.shape[-1]], dtype=np.int64)
+
+    cdef unsigned int i, j, k, num_path
+    cdef list path_list
 
     for i in range(n):
         for j in range(n):
-            if i == j:
+            if i == j or path_copy[i][j] == 510:
                 continue
-            if path_copy[i][j] == 510:
-                continue
-            path = [i] + get_all_edges(path_copy, i, j) + [j]
-            # path: [i, k1, k2, k3, ..., j]
-            # so the number of edges passing in this path is len(path) - 1
-            num_path = len(path) - 1
-            for k in range(num_path):
-                edge_fea_all[i, j, k, :] = edge_feat_copy[path[k], path[k+1], :]
 
-    # edge_fea_all: [node_num, node_num, max_distance(N), edge_feat_num]
-    # it stores all of the edge_attr of edges passing from node i to node j.
+            path_list = [i] + get_all_edges(path_copy, i, j) + [j]
+            num_path = len(path_list) - 1
+
+            for k in range(num_path):
+                edge_fea_all[i, j, k, :] = edge_feat_copy[path_list[k], path_list[k+1], :]
+
     return edge_fea_all
